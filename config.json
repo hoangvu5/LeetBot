@@ -1,0 +1,11 @@
+{
+    "gen_model": "gpt-4o",
+    "stt_model": "whisper-1",
+
+    "thumbnail_audio": false,
+    "reuse_audio": false,
+    "reuse_prompt": false,
+    "solution_in_code": false,
+
+    "language": "Python"
+}

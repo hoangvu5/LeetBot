@@ -1,0 +1,9 @@
+.env
+*.sln
+
+env/
+__pycache__/
+slides/
+
+media/
+cache/
