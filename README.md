@@ -1,3 +1,20 @@
+# LeetBot
+
+Code that helps create [3Blue1Brown](https://www.youtube.com/@3blue1brown)'s level LeetCode shorts.
+
+Example result video: [Link](https://www.youtube.com/shorts/EHdnbe0g_uY)
+
+[![Link](https://img.youtube.com/vi/EHdnbe0g_uY/0.jpg)](https://www.youtube.com/watch?v=EHdnbe0g_uY)
+
+(Auto-subtitle & background music added using CapCut)
+
+### Description
+- Selenium will scrape the LeetCode problem statement from the title slug.
+- OpenAI's API will generate the script for the video.
+- ElevenLabs will generate the voice for the video and the timestamps for each word.
+- Manim library is used to render the video. Common data structures have been declared such as array, map,...
+- User will have to manually copy and paste all the information needed into an LLM for it to generate Manim code for rendering the video.
+
 ### Prerequisites
 
 1. Create a virtual environment named with `python -m venv <env-name>`.
