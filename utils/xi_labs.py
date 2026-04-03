@@ -1,48 +1,45 @@
-import requests
+from dotenv import load_dotenv
+from settings import (
+    CACHE_AUDIO_DIR,
+    XI_CHUNK_SIZE,
+    XI_MODEL,
+    XI_VOICE_ID,
+    XI_VOICE_SETTINGS,
+)
+import logging
 import os
+import requests
 
-CHUNK_SIZE = 1024
-xi_key = os.getenv("XI_API_KEY")
+load_dotenv()
 
-# voice_id = "FdwfwWtVwj4Q6sR0vunC" # Myriam
-# voice_id = "Xb7hH8MSUJpSbSDYk0k2" # Alice
-# voice_id = "UEKYgullGqaF0keqT8Bu" # Chris
-voice_id = "BtWabtumIemAotTjP5sk" # Robert
-# voice_id = "TV98XJgJjJZWhXiSKmhJ" # My Voice
-url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+log = logging.getLogger(__name__)
 
-def xi_tts(text, audio_path):
+_xi_key = os.getenv("XI_API_KEY")
+_url = f"https://api.elevenlabs.io/v1/text-to-speech/{XI_VOICE_ID}"
+
+
+def xi_tts(text: str, audio_path: str) -> None:
+    """Convert text to speech via ElevenLabs and write MP3 to audio_path."""
     payload = {
-        "model_id": "eleven_multilingual_v2",
+        "model_id": XI_MODEL,
         "text": text,
-        "voice_settings": {
-            "similarity_boost": 0.75,
-            "stability": 0.5,
-            "style": 0,
-            "use_speaker_boost": True
-        }
+        "voice_settings": XI_VOICE_SETTINGS,
     }
-
     headers = {
         "Accept": "audio/mpeg",
         "Content-Type": "application/json",
-        "xi-api-key": xi_key
+        "xi-api-key": _xi_key,
     }
 
-    response = requests.request("POST", url, json=payload, headers=headers)
+    response = requests.post(_url, json=payload, headers=headers)
+    if not response.ok:
+        raise RuntimeError(
+            f"ElevenLabs TTS request failed ({response.status_code}): {response.text}"
+        )
 
-    if response.status_code == 200:
-        print("Request was successful, status code:", response.status_code)
-    else:
-        print("Request failed, status code:", response.status_code)
-        print("Response content:", response.text)
-        return
-
-    directory = 'cache/audio'
-    if not os.path.exists(directory):
-        os.makedirs(directory)
-    
-    with open(audio_path, 'wb') as f:
-        for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
+    os.makedirs(CACHE_AUDIO_DIR, exist_ok=True)
+    with open(audio_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=XI_CHUNK_SIZE):
             if chunk:
                 f.write(chunk)
+    log.info("Audio saved to %s", audio_path)

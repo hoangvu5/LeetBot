@@ -1,9 +1,31 @@
+# Secrets
 .env
-*.sln
 
+# Virtual environments
+.venv/
 env/
-__pycache__/
-slides/
+venv/
 
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+
+# Manim output
 media/
+
+# Runtime cache (scraped data, generated audio/text/video)
 cache/
+
+# Editor / OS
+.vscode/
+.idea/
+*.sln
+*.swp
+.DS_Store
+Thumbs.db
+.claude/

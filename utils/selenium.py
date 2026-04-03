@@ -1,114 +1,97 @@
 from selenium import webdriver
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.service import Service
 from selenium.common.exceptions import NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
-
-import time
-import sys
-import os
-import ast
+from settings import (
+    CACHE_PROBLEMS_DIR,
+    DIFFICULTY_CLASSES,
+    LEETCODE_BASE_URL,
+    PAGE_LOAD_WAIT_S,
+)
 import json
+import logging
+import os
+import time
 
-# get problem
-def scrape():
-    title_slug = input("Title slug of the problem: ")
-    num = int(input("# of the problem: "))
+log = logging.getLogger(__name__)
 
-    file_path = f'cache/problems/{title_slug}.json'
-    cache = ""
-    meta_content = ""
-    difficulty = ""
-    if os.path.exists(file_path):
-        # if problem was already scraped, then use it
-        with open(file_path, 'r', encoding='utf-8') as f:
-            cache = json.load(f)
-        meta_content = cache["meta_content"]
-        difficulty = cache["difficulty"]
-    else:
-        # scrape with Selenium
-        defaultURL = "https://leetcode.com/problems/" + title_slug
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service)
-        driver.get(defaultURL)
 
-        # wait for website fully loaded and extract information
-        time.sleep(7)
-        meta_tag = driver.find_element(By.NAME, 'description')
-        meta_content = meta_tag.get_attribute('content')
+def _scrape_from_web(title_slug: str) -> tuple[str, str]:
+    """Scrape meta description and difficulty from LeetCode using Selenium."""
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service)
+    try:
+        driver.get(LEETCODE_BASE_URL + title_slug)
+        time.sleep(PAGE_LOAD_WAIT_S)
 
-        # get difficulty of the problem
-        class_names = [
-            "text-difficulty-easy",
-            "text-difficulty-medium",
-            "text-difficulty-hard"
-        ]
+        meta_tag = driver.find_element(By.NAME, "description")
+        meta_content = meta_tag.get_attribute("content")
 
-        for class_name in class_names:
+        difficulty = ""
+        for class_name in DIFFICULTY_CLASSES:
             try:
-                difficulty_element = driver.find_element(By.CLASS_NAME, class_name)
-                difficulty = difficulty_element.get_attribute('innerHTML').strip()
+                element = driver.find_element(By.CLASS_NAME, class_name)
+                difficulty = element.get_attribute("innerHTML").strip()
                 break
             except NoSuchElementException:
                 continue
-    
-        # save meta_content
-        output = {}
-        directory = 'cache/problems'
-        if not os.path.exists(directory):
-            os.makedirs(directory)
+    finally:
+        driver.quit()
 
-        output["meta_content"] = meta_content
-        output["difficulty"] = difficulty
-        with open(f'cache/problems/{title_slug}.json', 'w', encoding='utf-8') as f:
-            json.dump(output, f, indent=4)
+    return meta_content, difficulty
 
-    # edit information
+
+def _parse_meta_content(meta_content: str) -> tuple[str, str, str, str]:
+    """Extract title, description, raw example, and input from LeetCode meta content."""
     placeholder = "Can you solve this real interview question? "
-    pos1 = meta_content.find('-')
-    pos2 = meta_content.find("Example 1")
-    pos3 = meta_content.find("Input")
-    pos4 = meta_content.find("Output")
-    pos5 = meta_content.find("Explanation")
-    pos6 = meta_content.find("Example 2")
-    if pos6 == -1:
-        pos6 = len(meta_content) - 1
-    if pos1 == -1 or pos2 == -1 or pos3 == -1 or pos4 == -1:
-        sys.exit("Title or description or example not found.")
 
-    title = meta_content[:pos1-1].replace(placeholder, "")
-    description = meta_content[pos1+2:pos2].rstrip().replace("\n", " ")
-    inp = meta_content[pos3+5:pos4]
-    if inp.startswith(':'):
-        inp = inp[1:]
-    inp = inp.strip()
-    outp = ""
-    if pos5 == -1:
-        outp = meta_content[pos4+6:pos6]
+    pos_dash = meta_content.find(" - ")
+    pos_ex1 = meta_content.find("Example 1")
+    pos_input = meta_content.find("Input")
+    pos_output = meta_content.find("Output")
+
+    if -1 in (pos_dash, pos_ex1, pos_input, pos_output):
+        raise ValueError("Could not parse title, description, or example from page meta content.")
+
+    pos_ex2 = meta_content.find("Example 2")
+    if pos_ex2 == -1:
+        pos_ex2 = len(meta_content) - 1
+
+    title = meta_content[:pos_dash].replace(placeholder, "").strip()
+    description = meta_content[pos_dash + 3:pos_ex1].rstrip().replace("\n", " ")
+    example = meta_content[pos_input:pos_ex2].rstrip()
+    inp = meta_content[pos_input + 5:pos_output].lstrip(":").strip()
+
+    return title, description, example, inp
+
+
+def scrape() -> tuple[str, str, str, str, str, int, str]:
+    """Prompt the user for a problem slug and number, then scrape or load from cache.
+
+    Returns:
+        title, title_slug, description, example, example_dict, number, difficulty
+    """
+    title_slug = input("Title slug of the problem: ").strip()
+    num = int(input("Problem number: "))
+
+    cache_path = f"{CACHE_PROBLEMS_DIR}/{title_slug}.json"
+
+    if os.path.exists(cache_path):
+        log.info("Loading cached problem data from %s", cache_path)
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        meta_content = cached["meta_content"]
+        difficulty = cached["difficulty"]
     else:
-        outp = meta_content[pos4+6:pos5]
-    if outp.startswith(':'):
-        outp = outp[1:]
-    outp = outp.strip()
-    example = meta_content[pos3:pos6].rstrip()
+        log.info("Scraping %s from LeetCode...", title_slug)
+        meta_content, difficulty = _scrape_from_web(title_slug)
+        os.makedirs(CACHE_PROBLEMS_DIR, exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({"meta_content": meta_content, "difficulty": difficulty}, f, indent=4)
+        log.info("Problem cached to %s", cache_path)
 
-    # convert input into Python dictionary format
-    # example = inp.replace(" = ", ":")
-    # start = 0
-    # end = -3
-    # while start != 1:
-    #     end = example.find(":", end + 3)
-    #     example = example[:start] + "'" + example[start:end] + "'" + example[end:]
-    #     start = example.find(", ", start + 1) + 2
+    title, description, example, _ = _parse_meta_content(meta_content)
+    log.info("Loaded: %s (%s)", title, difficulty)
 
-    # # convert output into Python and append into dictionary
-    # example = "{" + example + ", 'answer':" + outp + "}"
-    print(example)
-    dict_example = example
-    # dict_example = ast.literal_eval(example)
-
-    return title, title_slug, description, example, dict_example, num, difficulty
-
-
+    return title, title_slug, description, example, example, num, difficulty

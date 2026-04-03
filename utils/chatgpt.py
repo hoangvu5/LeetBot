@@ -1,50 +1,47 @@
 from openai import OpenAI
 from dotenv import load_dotenv
-import os
+from settings import CACHE_GEN_TEXT_DIR
 import ast
+import logging
+import os
 
 load_dotenv()
-openai_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=openai_key)
 
-def complete_chat(messages, model, title_slug):
-    template = [
+log = logging.getLogger(__name__)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+def complete_chat(prompt: str, model: str, title_slug: str) -> str:
+    messages = [
         {
             "role": "system",
             "content": "You are a programmer proficient in competitive programming.",
         },
-        {
-            "role": "user",
-            "content": messages,
-        }
+        {"role": "user", "content": prompt},
     ]
     response = client.chat.completions.create(
-        model = model,
-        messages = template,
-        temperature = 0.01,
+        model=model,
+        messages=messages,
+        temperature=0.01,
     )
-
-    # save text
     text = response.choices[0].message.content
-    directory = 'cache/generated-text'
-    if not os.path.exists(directory):
-        os.makedirs(directory)
 
-    gen_path = f"cache/generated-text/{title_slug}.txt"
-    with open(gen_path, 'w', encoding='utf-8') as f:
+    os.makedirs(CACHE_GEN_TEXT_DIR, exist_ok=True)
+    gen_path = f"{CACHE_GEN_TEXT_DIR}/{title_slug}.txt"
+    with open(gen_path, "w", encoding="utf-8") as f:
         f.write(text)
+    log.info("Script cached to %s", gen_path)
 
     return text
-    
 
-def postprocessing(response):
+
+def postprocessing(response: str) -> dict:
     response = response.replace("```json\n", "").replace("\n```", "")
-    final_dict = ast.literal_eval(response)
+    return ast.literal_eval(response)
 
-    return final_dict
-    
-def generate_prompt(description, example, solution, language="Python"):
-    prompt = f"""
+
+def generate_prompt(description: str, example: str, solution: str, language: str = "Python") -> str:
+    return f"""
     ### INSTRUCTION ###
     You have to write a script for a video that presents a coding exercise and its solution. Your script should contain the following sections:
     1. Statement: Define the problem. Leave out unnecessary specifics mentioned in the problem such as the time complexity, the constraints, how the output must be formatted, or how the input ensures something, etc. If you want to write arithmetic symbols such as +, -, *, or /, you should write it as plus, minus, multiply by, or divide by. Simplify the problem as much as possible to not confuse the listeners.
@@ -62,7 +59,7 @@ def generate_prompt(description, example, solution, language="Python"):
     {solution}
 
     ### OUTPUT FORMAT ###
-    The output should be a markdown code snippet formatted in the following schema, including the leading and trailing ```json and ```. In the output, for statement, example, definition, and thought_process, do not use any punctuations except for comma and full stop. For example, don't use brackets when listing out the elements inside an array:
+    The output should be a markdown code snippet formatted in the following schema, including the leading and trailing ```json and ```. In the output, for statement, example, definition, and thought_process, do not use any punctuations except for comma and full stop. Every sentence must end with a full stop. Keep each sentence short, no more than 20 words. Do not write run-on sentences. For example, don't use brackets when listing out the elements inside an array:
     ```json
     {{
         "statement": string, // state the problem
@@ -72,129 +69,211 @@ def generate_prompt(description, example, solution, language="Python"):
     }}
     ```
     """
-    return prompt
 
-def get_timestamps(directory, model):
-    audio_file = open(directory, "rb")
-    transcript = client.audio.transcriptions.create(
-        file=audio_file,
-        model=model,
-        response_format="verbose_json",
-        timestamp_granularities=["word"]
-    )
-    return transcript.words
 
-def generate_video_prompt(title, description, example, script, timestamps):
-    prompt = f"""
+def get_timestamps(audio_path: str, model: str, script: str = "") -> list:
+    with open(audio_path, "rb") as audio_file:
+        transcript = client.audio.transcriptions.create(
+            file=audio_file,
+            model=model,
+            response_format="verbose_json",
+            timestamp_granularities=["word"],
+        )
+    words = [{"word": w.word, "start": w.start, "end": w.end} for w in transcript.words]
+
+    # Align transcribed timing to known script words to fix Whisper mis-recognitions.
+    if script:
+        script_words = script.split()
+        if abs(len(script_words) - len(words)) <= max(5, int(len(words) * 0.15)):
+            # Counts are close enough — replace recognized words with script words.
+            for i, entry in enumerate(words):
+                if i < len(script_words):
+                    entry["word"] = script_words[i]
+
+    return words
+
+
+def _condense_timestamps(timestamps: list[dict], max_group: int = 10) -> list[dict]:
+    """Group word-level timestamps into sentence/phrase markers for the video prompt.
+
+    Returns a compact list of {"t": float, "text": str} — one entry per sentence
+    (split on terminal punctuation) or per max_group words.
+    """
+    sentences: list[dict] = []
+    current_words: list[str] = []
+    current_start: float | None = None
+
+    for entry in timestamps:
+        word = entry["word"].strip()
+        start = entry["start"]
+
+        if current_start is None:
+            current_start = start
+
+        current_words.append(word)
+        ends_sentence = word.endswith((".", "!", "?"))
+
+        if ends_sentence or len(current_words) >= max_group:
+            sentences.append({"t": round(current_start, 2), "text": " ".join(current_words)})
+            current_words = []
+            current_start = None
+
+    if current_words and current_start is not None:
+        sentences.append({"t": round(current_start, 2), "text": " ".join(current_words)})
+
+    return sentences
+
+
+def generate_video_prompt(cache: dict) -> str:
+    """Build the Manim code-generation prompt from the full problem cache dict."""
+    title       = cache["title"]
+    difficulty  = cache["difficulty"]
+    description = cache["description"]
+    example     = cache["example"]
+    script      = cache["script"]
+    timestamps  = cache["timestamps"]
+
+    condensed   = _condense_timestamps(timestamps)
+    total_dur   = round(timestamps[-1]["end"], 2) if timestamps else 0
+
+    return f"""
     Currently we have a LeetCode problem, along with the example variables of one testcase. \
     Your task right now is to generate Python code to create animation from the example variables \
-    that fits the timestamp of the prompt spoken in the video.
+    that fits the timing of the narration spoken in the video.
 
-    The problem is {title}. Here's the description of the problem:
+    The problem is {title} ({difficulty}). Here's the description of the problem:
     {description}
 
     This is one example of the given variables and the expected answer in JSON format:
     {example}
 
     These are the Python classes and their functions you are already provided for creating the \
-    animation. You don't have to implement it. You may not have to use all of it, depending on if \
-    the prompt mentions it or not, or the problem or the solution needs it or not. You are not \
-    allowed to use manim's self.play() function, and all the animation function needed are all \
-    provided below:
+    animation. You don't have to implement them. Choose only the classes relevant to the problem. \
+    You are not allowed to use manim's self.play() function directly — all animation is done \
+    through the methods listed below. All text uses CMU Serif font automatically:
+
     class MTitle
-        - def __init__(title, difficulty, scene=self): Create an MTitle with title `title` and subtitle `difficulty`. When setting the title, only use the problem's title (e.g. Two Sum) and not the whole LeetCode problem number.
-        - def run(run_time=1): Display the title. Can change default run_time (1 second).
-        - .mobject: Get the manim object of the MTitle
+        - def __init__(title, difficulty, scene=self): Use only the problem title (e.g. "Two Sum"), not the full LeetCode number.
+        - def run(run_time=1): Display the title card, then shrink it to the top of the screen.
+        - .mobject
 
     class MArray
-        - def __init__(name, array, scene=self, center=coor): Create an MArray with name `name` and Python list `array`
-        - def run(run_time=1): Display the array. Can change default run_time (1 second).
-        - def highlight_element(idx, color=BLUE, run_time=1): Highlight element at index `idx` (index starts from 0), can change `color` to WHITE to unhighlight and can change default run_time (1 second). Before highlight element again, please unhighlight the element first and unhighlight the element for a while before highlight immediately.
-        - def highlight_elements(indices, color=BLUE, run_time=1): Highlight elements with index inside `indices, can change `color` to WHITE to unhighlight and can change default run_time (1 second). Use this when you need to highlight multiple indices all at once.
-        - def highlight_range(start, end, color=BLUE, run_time=1): Highlight elements from `start` to `end` inclusive, can change `color` to WHITE to unhighlight and can change default run_time (1 second). Use this when you need to highlight range all at once.
-        - .array: Get the Python array of the MArray
-        - .mobject: Get the manim object of the MArray
+        - def __init__(name, array, scene=self, center=coor): Horizontal array display.
+        - def run(run_time=1)
+        - def highlight_element(idx, color=BLUE, run_time=1): Unhighlight (color=WHITE) before re-highlighting.
+        - def highlight_elements(indices, color=BLUE, run_time=1): Highlight multiple indices at once.
+        - def highlight_range(start, end, color=BLUE, run_time=1): Highlight a contiguous range inclusive.
+        - def disappear(run_time=1)
+        - .array, .mobject
 
     class MVariable
-        - def __init__(name, variable, scene=self, center=coor): Create an MVariable with name `name` and Python integer `variable`
-        - def run(run_time=1): Display the variable. Can change default run_time (1 second).
-        - def highlight_variable(color=BLUE, run_time=1): Highlight the variable, can change `color` to WHITE to unhighlight and can change default run_time (1 second).
-        - def disappear(run_time=1): Make the variable disappear. Can change default run_time (1 second).
-        - .variable: Get the value of the MVariable
-        - .mobject: Get the manim object of the MVariable
+        - def __init__(name, variable, scene=self, center=coor)
+        - def run(run_time=1)
+        - def highlight_variable(color=BLUE, run_time=1)
+        - def disappear(run_time=1)
+        - .variable, .mobject
 
     class MMap
-        - def __init__(name, map, scene=self, center=coor): Create an MMap with name `name` and Python dict `map`
-        - def run(run_time=1): Display the map. Can change default run_time (1 second).
-        - def insert_element(key, value, run_time=1): Insert a key, value pair into the map and render new map. Can change default run_time (1 second)
-        - def remove_element(key, run_time=1): Delete a key from the map and render new map. Can change default run_time (1 second)
-        - .map: Get the Python dict of the MMap
-        - .mobject: Get the manim object of the MMap
+        - def __init__(name, map, scene=self, center=coor): Dict display rendered as text.
+        - def run(run_time=1)
+        - def insert_element(key, value, run_time=1)
+        - def remove_element(key, run_time=1)
+        - def highlight_element(key, color=BLUE, run_time=1): Highlight a specific key-value pair.
+        - def highlight(color=BLUE, run_time=1): Highlight the entire map text.
+        - def disappear(run_time=1)
+        - .map, .mobject
 
     class MText
-        - def __init__(text, scene=self, center=coor): Create an MText with text `text`. When creating this object, try to reduce the length of the text to fit in the screen.
-        - def run(run_time=1): Display the text. Can change default run_time (1 second).
-        - def edit(new_text, run_time=1): Morph into `new_text`. Can change default run_time (1 second).
-        - def disappear(run_time=1): Make the text disappear. Can change default run_time (1 second).
-        - .text: Get the value of the text
-        - .mobject: Get the manim object of the MText
+        - def __init__(text, scene=self, center=coor): Short text label. Keep text brief to fit the screen.
+        - def run(run_time=1)
+        - def edit(new_text, run_time=1): Morph to new text.
+        - def disappear(run_time=1)
+        - .text, .mobject
 
     class MStack
-        - def __init__(name, stack, scene=self, center=coor): Create an MStack with name `name` and Python list `stack`
-        - def run(run_time=1): Display the stack. Can change default run_time (1 second).
-        - def highlight_top(color=BLUE, run_time=1): Highlight element at the top of the stack, can change `color` to WHITE to unhighlight and can change default run_time (1 second). Before highlight element again, please unhighlight the element first and unhighlight the element for a while before highlight immediately.
-        - def push(value, run_time=1): Make the top element of the stack fade in. Can change default run_time (1 second).
-        - def pop(run_time=1): Make the top element of the stack fade out. Can change default run_time (1 second). Return the value of the top element. Return -1 if the stack is empty.
-        - def top(): Return the value of the top element. Return -1 if the stack is empty.
-        - .stack: Get the Python list of the MStack
-        - .mobject: Get the manim object of the MStack
+        - def __init__(name, stack, scene=self, center=coor): Horizontal stack with a bounding box.
+        - def run(run_time=1)
+        - def highlight_top(color=BLUE, run_time=1)
+        - def push(value, run_time=1)
+        - def pop(run_time=1): Returns popped value, or -1 if empty.
+        - def top(): Returns top value, or -1 if empty.
+        - def disappear(run_time=1)
+        - .stack, .mobject
 
-    This is the prompt for today's animation:
+    class MLinkedList
+        - def __init__(name, values, scene=self, center=coor): Singly-linked list rendered as boxes with arrows.
+        - def run(run_time=1)
+        - def highlight_node(index, color=BLUE, run_time=1): Highlight box + value at position index.
+        - def highlight_next(index, color=BLUE, run_time=1): Highlight the arrow out of node at index.
+        - def disappear(run_time=1)
+        - .values, .mobject
+
+    class MBinaryTree
+        - def __init__(name, array, scene=self, center=coor): Binary tree from LeetCode-style level-order list (None = absent node).
+        - def run(run_time=1)
+        - def highlight_node(index, color=BLUE, run_time=1): index is the array index.
+        - def highlight_edge(parent_index, child_index, color=BLUE, run_time=1)
+        - def disappear(run_time=1)
+        - .array, .mobject
+
+    class MGraph
+        - def __init__(name, adj, scene=self, directed=False, center=coor): Graph from adjacency dict {{node: [neighbours]}}.
+        - def run(run_time=1)
+        - def highlight_node(node, color=BLUE, run_time=1)
+        - def highlight_edge(u, v, color=BLUE, run_time=1): For undirected, order doesn't matter.
+        - def disappear(run_time=1)
+        - .adj, .mobject
+
+    --- LAYOUT (IMPORTANT) ---
+    This is a portrait video (YouTube Shorts). The Manim frame is 4.5 units wide (x: -2.2 to 2.2) \
+    and 8 units tall (y: -4 to 4). After MTitle.run(), the title bar sits at y ≈ 2.9–3.25. \
+    Place all other content objects below y = 2.0 to avoid overlap with the title bar.
+
+    Approximate rendered heights of objects (after their internal scaling):
+      MText / MVariable / MMap  →  ~0.7 units tall
+      MArray / MStack           →  ~1.0 units tall (taller with index labels)
+      MLinkedList               →  ~0.8 units tall
+      MBinaryTree               →  ~2.5 units tall
+      MGraph                    →  ~2.0 units tall
+
+    Placement rules:
+      1. Declare at the top:  coor = ORIGIN + UP * 1.5
+      2. After MTitle.run(), do NOT adjust coor.
+      3. After creating each data structure, decrement coor[1] by the object's height + 0.3 gap.
+         e.g. after MArray:  coor[1] -= 1.3   (1.0 height + 0.3 gap)
+              after MText:   coor[1] -= 1.0   (0.7 height + 0.3 gap)
+      4. When a data structure disappears, add back the same amount.
+      5. Keep at most 3 objects visible simultaneously to avoid crowding.
+      6. For MBinaryTree or MGraph, disappear other objects first to free vertical space.
+
+    --- TIMING ---
+    This is the narration script for the video:
     {script}
-    
-    There are timestamps for each word spoken in seconds in JSON format. Besides using the functions \
-    above, you must remember to use manim's self.wait() function, in order to sync between the \
-    animation and the prompt. You can calculate the time needed to wait between two specific animations \
-    by subtracting the two timestamps. Remember to also take into account the time it takes for \
-    the animation's run time (by default it is 1 second per animation function):
-    {timestamps}
 
-    All of your output code should be placed inside function `def construct(self):` only, and not a \
-    class. Do not import any libraries or wrap a class outside `def construct(self):`. You may write \
-    out your thought process step by step but finally, you have to write your output code at the end \
-    of your response. In your thought process, you should plan out what animation should be played or what \
-    data structures should be created and rendered at this timestamp when this word is spoken, \
-    the time it takes for the animation to play, and the time needed to wait until the next animation is rendered. 
-    If there's no time to wait between two animations, then don't need to use self.wait(). \
-    When naming new variables or data structures to solve the problem, try to make \
-    the name short but still understandable (e.g: ma for map, se for set, etc.). Carefully check \
-    the logic of the code.
+    Sentence-level timing markers (each entry: time in seconds → phrase spoken at that time).
+    Total audio duration: {total_dur}s — the video must last at least this long.
+    Use self.wait() to sync animations: wait_time = marker_time - time_elapsed_so_far.
+    Skip self.wait() if the result is zero or negative.
+    {condensed}
 
-    Before calling any functions, you should declare this `coor = ORIGIN + UP * 2.05`. After creating \
-    objects representing data structures or variables (except MTitle), you should write this `coor[1] -= 0.5`. \
-    If you erase or make a data structure disappear, then after it you should write `coor[1] += 0.5`.
+    Output only the body of `def construct(self):` — no class wrapper, no imports. \
+    You may reason step by step first, but place the final code block at the very end. \
+    When naming variables, keep names short (e.g. mp=map, st=stack, ll=linked_list). \
+    Verify timing carefully: the animation must cover the full {total_dur}s of narration.
     """
 
-    return prompt
 
-def complete_video_chat(messages, model):
-    template = [
+def complete_video_chat(prompt: str, model: str) -> str:
+    messages = [
         {
             "role": "system",
             "content": "You are a senior Python developer, specialized in creating math animations using manim Python library.",
         },
-        {
-            "role": "user",
-            "content": messages,
-        }
+        {"role": "user", "content": prompt},
     ]
     response = client.chat.completions.create(
-        model = model,
-        messages = template,
-        temperature = 0.01,
+        model=model,
+        messages=messages,
+        temperature=0.01,
     )
-
-    text = response.choices[0].message.content
-    return text
-
-
+    return response.choices[0].message.content
