@@ -43,11 +43,32 @@ def postprocessing(response: str) -> dict:
 def generate_prompt(description: str, example: str, solution: str, language: str = "Python") -> str:
     return f"""
     ### INSTRUCTION ###
-    You have to write a script for a video that presents a coding exercise and its solution. Your script should contain the following sections:
-    1. Statement: Define the problem. Leave out unnecessary specifics mentioned in the problem such as the time complexity, the constraints, how the output must be formatted, or how the input ensures something, etc. If you want to write arithmetic symbols such as +, -, *, or /, you should write it as plus, minus, multiply by, or divide by. Simplify the problem as much as possible to not confuse the listeners.
-    2. Example: Start the section with "For this example, ..." Use the example testcase below for this section. If you want to write arithmetic symbols such as +, -, *, or /, you should write it as plus, minus, multiply by, or divide by.
-    3. Thought process: Concisely explain your solution. Start the section with "Let's go over the thought process." If you want to write arithmetic symbols such as +, -, *, or /, you should write it as plus, minus, multiply by, or divide by. If a solution is provided, then your thought process should align with the given solution.
-    4. Solution: This section only contains the solution in {language}. In the {language} code, do not write in-line or multiline comments above or next to sections of code. Do not explain the code after writing it. The newline character should be escaped like `\\n`. The code should only contain the class Solution which contains a function that solves the problem, like in LeetCode style.
+    You are writing a voiceover script for a short coding video. As the narration plays, a Manim
+    animation runs on screen that visualises data structures from the example testcase in real time.
+    The viewer both hears your words and sees the animation simultaneously, so your script must
+    describe what is happening on screen at each moment.
+
+    Your script must contain the following sections:
+
+    1. Statement: Define the problem clearly and concisely. Omit constraints, time complexity
+       requirements, output formatting rules, and guarantee clauses. Write arithmetic symbols
+       as words: plus, minus, multiply by, divide by. Simplify as much as possible.
+
+    2. Example: Start with "For this example, ..." Walk the viewer through the example testcase
+       values shown on screen. Describe what the input looks like visually.
+
+    3. Thought process: Start with "Let's go over the thought process."
+       - First give a one or two sentence high-level idea of the approach.
+       - Then walk through the example step by step as if you are tracing the algorithm live
+         alongside the animation. At each step, say which element or value is being examined,
+         what the algorithm does with it, and what changes on screen. Narrate in the order
+         the algorithm actually processes the example, not in the abstract.
+       - If a solution is provided, your explanation must match that solution exactly.
+       - Write arithmetic symbols as words.
+
+    4. Solution: Only the {language} code. No inline or multiline comments. No explanation after
+       the code. Escape newlines as \\n. Only the class Solution with the solving function,
+       LeetCode style.
 
     ### PROBLEM ###
     {description}
@@ -59,13 +80,16 @@ def generate_prompt(description: str, example: str, solution: str, language: str
     {solution}
 
     ### OUTPUT FORMAT ###
-    The output should be a markdown code snippet formatted in the following schema, including the leading and trailing ```json and ```. In the output, for statement, example, definition, and thought_process, do not use any punctuations except for comma and full stop. Every sentence must end with a full stop. Keep each sentence short, no more than 20 words. Do not write run-on sentences. For example, don't use brackets when listing out the elements inside an array:
+    Output a markdown code snippet in the schema below, including the leading and trailing ```json
+    and ```. For statement, example, and thought_process: no punctuation except comma and full stop.
+    Every sentence ends with a full stop. Each sentence is at most 20 words. No run-on sentences.
+    Do not use brackets when listing array elements.
     ```json
     {{
-        "statement": string, // state the problem
-        "example": string, // present and explain the example testcase
-        "thought_process": string, // explain the thought process
-        "solution": string, // solution in {language} and formatted as a string
+        "statement": string,       // state the problem
+        "example": string,         // present and explain the example testcase
+        "thought_process": string, // high-level idea then step-by-step trace of the example
+        "solution": string,        // solution in {language} formatted as a string
     }}
     ```
     """
@@ -224,6 +248,16 @@ def generate_video_prompt(cache: dict) -> str:
         - def disappear(run_time=1)
         - .adj, .mobject
 
+    class MHashMap
+        - def __init__(name, scene=self, center=coor): Renders key→value rows between curly braces. Starts empty; use insert_element to populate.
+        - def run(run_time=1): Show the name label.
+        - def insert_element(key, value, below_mobs=None, run_time=1): Adds a row, braces expand downward. Pass below_mobs=[obj.mobject, ...] to shift them down automatically.
+        - def remove_element(key, below_mobs=None, run_time=1): Removes a row, braces contract. Pass below_mobs to shift them up.
+        - def highlight_element(key, color=BLUE, run_time=1): Highlight a specific key→value row.
+        - def disappear(run_time=1)
+        - .data, .mobject
+        Height after n rows: ~0.7 + n * 0.6 units
+
     --- LAYOUT (IMPORTANT) ---
     This is a portrait video (YouTube Shorts). The Manim frame is 4.5 units wide (x: -2.2 to 2.2) \
     and 8 units tall (y: -4 to 4). After MTitle.run(), the title bar sits at y ≈ 2.9–3.25. \
@@ -251,7 +285,10 @@ def generate_video_prompt(cache: dict) -> str:
     {script}
 
     Sentence-level timing markers (each entry: time in seconds → phrase spoken at that time).
-    Total audio duration: {total_dur}s — the video must last at least this long.
+    Total narration duration: {total_dur}s. All animations must finish by exactly {total_dur}s —
+    do not add extra waits beyond that. The very last line of your code must always be
+    `self.wait(2)` (a 2-second freeze on the final frame). Do not count this wait toward
+    the {total_dur}s budget; it comes after.
     Use self.wait() to sync animations: wait_time = marker_time - time_elapsed_so_far.
     Skip self.wait() if the result is zero or negative.
     {condensed}
@@ -259,7 +296,7 @@ def generate_video_prompt(cache: dict) -> str:
     Output only the body of `def construct(self):` — no class wrapper, no imports. \
     You may reason step by step first, but place the final code block at the very end. \
     When naming variables, keep names short (e.g. mp=map, st=stack, ll=linked_list). \
-    Verify timing carefully: the animation must cover the full {total_dur}s of narration.
+    Verify timing carefully: animations must cover exactly {total_dur}s, then end with self.wait(2).
     """
 
 

@@ -42,13 +42,15 @@ VIDEO_MODEL: str = "gpt-5.4-2026-03-05"   # OpenAI model used specifically for M
 
 # ── Manim rendering ───────────────────────────────────────────────────────────
 # Quality flag passed to the manim CLI:  l=480p15  m=720p30  h=1080p60  k=2160p60
-MANIM_QUALITY: str = "h"
-MANIM_WIDTH: int   = 1080   # YouTube Shorts: portrait 1080×1920
-MANIM_HEIGHT: int  = 1920
+MANIM_QUALITY: str    = "h"
+MANIM_WIDTH: int      = 1080   # YouTube Shorts: portrait 1080×1920
+MANIM_HEIGHT: int     = 1920
+MANIM_CACHE: bool     = False  # False → --disable_caching (always re-render clips)
 
 # ── Post-processing ───────────────────────────────────────────────────────────
 BG_MUSIC_VOLUME: float       = 0.08   # background music level relative to narration (0–1)
 CAPTION_WORDS_PER_BLOCK: int = 3      # words grouped into each subtitle card
+SHOW_SUBTITLES: bool         = False   # False → skip subtitle burning in final video
 
 # ── Cache directories ─────────────────────────────────────────────────────────
 CACHE_ROOT: str          = "cache"

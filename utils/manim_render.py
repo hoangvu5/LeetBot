@@ -1,5 +1,5 @@
 from pathlib import Path
-from settings import CACHE_CODE_DIR, CACHE_VIDEO_DIR, MANIM_HEIGHT, MANIM_QUALITY, MANIM_WIDTH, REUSE_CODE, VIDEO_MODEL
+from settings import CACHE_CODE_DIR, CACHE_VIDEO_DIR, MANIM_CACHE, MANIM_HEIGHT, MANIM_QUALITY, MANIM_WIDTH, REUSE_CODE, VIDEO_MODEL
 from utils import chatgpt
 import logging
 import os
@@ -92,9 +92,10 @@ def render(title_slug: str) -> str:
         sys.executable, "-m", "manim",
         f"-q{MANIM_QUALITY}",
         "--media_dir", str(media_dir),
-        "rendering.py",
-        _SCENE_NAME,
     ]
+    if not MANIM_CACHE:
+        cmd.append("--disable_caching")
+    cmd += ["rendering.py", _SCENE_NAME]
     log.info("Running: %s", " ".join(cmd))
     result = subprocess.run(cmd, cwd=str(_ANIM_DIR.resolve()))
     if result.returncode != 0:

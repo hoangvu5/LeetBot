@@ -3,6 +3,7 @@ from settings import (
     CACHE_CAPTION_DIR,
     CACHE_OUTPUT_DIR,
     CAPTION_WORDS_PER_BLOCK,
+    SHOW_SUBTITLES,
 )
 import logging
 import os
@@ -20,7 +21,8 @@ _CAPTION_STYLE = (
     "Outline=3,"
     "Shadow=0,"
     "Alignment=2,"                # bottom-centre
-    "MarginV=100"
+    "MarginV=100,"
+    "BorderStyle=1"
 )
 
 
@@ -66,71 +68,65 @@ def finalize(
     srt_path: str,
     title_slug: str,
 ) -> str:
-    """Combine silent manim video with narration + background music, then burn captions.
+    """Combine silent manim video with narration + background music, then optionally burn captions.
 
     Pipeline:
-        1. ffmpeg: attach narration audio + background music → temp MP4
-        2. ffmpeg: burn SRT captions onto temp MP4 → final MP4
+        Pass 1 — filter_complex: mix narration + bg music, fix SAR → output MP4
+        Pass 2 (SHOW_SUBTITLES only) — burn SRT captions onto pass-1 output
 
     Returns the path to the final output video.
     """
     os.makedirs(CACHE_OUTPUT_DIR, exist_ok=True)
-    temp_path   = f"{CACHE_OUTPUT_DIR}/{title_slug}_temp.mp4"
     output_path = f"{CACHE_OUTPUT_DIR}/{title_slug}.mp4"
 
-    # Step 1 — attach audio tracks
     has_music = bool(music_path and os.path.exists(music_path))
+    if not has_music and music_path:
+        log.warning("Background music not found at '%s' — skipping.", music_path)
+
+    # ── Pass 1: mix audio + fix SAR ──────────────────────────────────────────
+    cmd = ["ffmpeg", "-y", "-i", video_path, "-i", narration_path]
     if has_music:
-        log.info("Mixing narration and background music...")
-        try:
-            _run([
-                "ffmpeg", "-y",
-                "-i", video_path,
-                "-i", narration_path,
-                "-i", music_path,
-                "-filter_complex",
-                (
-                    f"[2:a]volume={BG_MUSIC_VOLUME}[bg];"
-                    "[1:a][bg]amix=inputs=2:duration=first[aout]"
-                ),
-                "-map", "0:v",
-                "-map", "[aout]",
-                "-c:v", "copy",
-                "-shortest",
-                temp_path,
-            ])
-        except RuntimeError:
-            log.warning("Music mix failed — retrying without background music.")
-            has_music = False
+        cmd += ["-i", music_path]
+        audio_fc = (
+            f"[1:a]aresample=44100[nar];"
+            f"[2:a]volume={BG_MUSIC_VOLUME},aresample=44100[bg];"
+            "[nar][bg]amix=inputs=2:duration=first:dropout_transition=2[aout]"
+        )
+    else:
+        audio_fc = "[1:a]aresample=44100[aout]"
 
-    if not has_music:
-        if music_path:
-            log.warning("Background music not found at '%s' — skipping music mix.", music_path)
-        _run([
-            "ffmpeg", "-y",
-            "-i", video_path,
-            "-i", narration_path,
-            "-map", "0:v",
-            "-map", "1:a",
-            "-c:v", "copy",
-            "-shortest",
-            temp_path,
-        ])
+    filter_complex = f"{audio_fc};[0:v]setsar=1[vout]"
 
-    # Step 2 — burn captions
-    log.info("Burning captions...")
-    srt_abs = os.path.abspath(srt_path).replace("\\", "/").replace(":", "\\:")
-    _run([
-        "ffmpeg", "-y",
-        "-i", temp_path,
-        "-vf", f"subtitles='{srt_abs}':force_style='{_CAPTION_STYLE}'",
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", "[vout]",
+        "-map", "[aout]",
         "-c:v", "libx264",
         "-c:a", "aac",
-        "-b:a", "128k",
+        "-b:a", "192k",
         output_path,
-    ])
+    ]
 
-    os.remove(temp_path)
+    log.info("Mixing audio and encoding video...")
+    _run(cmd)
+
+    # ── Pass 2: burn captions (optional) ────────────────────────────────────
+    if SHOW_SUBTITLES:
+        sub_path = f"{CACHE_OUTPUT_DIR}/{title_slug}_sub.mp4"
+        srt_abs  = os.path.abspath(srt_path).replace("\\", "/").replace(":", "\\:")
+        log.info("Burning captions...")
+        _run([
+            "ffmpeg", "-y",
+            "-i", output_path,
+            "-vf", f"subtitles='{srt_abs}':force_style='{_CAPTION_STYLE}'",
+            "-map", "0:v",
+            "-map", "0:a",
+            "-c:v", "libx264",
+            "-c:a", "copy",
+            sub_path,
+        ])
+        os.replace(sub_path, output_path)
+
     log.info("Final video saved to %s", output_path)
     return output_path
 
